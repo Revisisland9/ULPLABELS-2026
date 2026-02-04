@@ -79,7 +79,13 @@ def generate_barcode_image_path(value):
     raw_path = os.path.join(tempfile.gettempdir(), value)
     return code128.save(raw_path, options={"write_text": False})
 
-def make_single_label_pdf(so, scac, pro, load_text, idx, total):
+def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
+    """
+    One label page:
+    - Barcode encodes PRO number (pro)
+    - Pallet location text is displayed bottom-left (no prefix)
+    - Bottom shows idx of total (center)
+    """
     barcode_path = generate_barcode_image_path(pro) if pro else None
 
     pdf = FPDF(unit="pt", format=(792, 612))
@@ -98,18 +104,19 @@ def make_single_label_pdf(so, scac, pro, load_text, idx, total):
         pdf.set_font("Arial", "B", 24)
         pdf.cell(792, 30, pro, ln=1, align="C")
 
-    # Load Number text
-    if load_text:
-        pdf.set_y(305)
-        pdf.set_font("Arial", "B", 34)
-        pdf.cell(792, 40, f"LOAD: {load_text}", ln=1, align="C")
-
     # Carrier
     pdf.set_y(360)
     pdf.set_font("Arial", "B", 130)
     pdf.cell(792, 100, scac, ln=1, align="C")
 
-    # Count
+    # Bottom-left pallet location (NO "Load:" prefix)
+    if pallet_location:
+        # bottom margin area (page height 612)
+        pdf.set_font("Arial", "B", 36)
+        pdf.set_xy(30, 545)  # x=left padding, y=near bottom
+        pdf.cell(300, 50, pallet_location, ln=0, align="L")
+
+    # Bottom-center count
     pdf.set_y(500)
     pdf.set_font("Arial", "B", 80)
     pdf.cell(792, 80, f"{idx} of {total}", ln=1, align="C")
@@ -126,9 +133,9 @@ def make_single_label_pdf(so, scac, pro, load_text, idx, total):
 def make_labels(so, scac, pro, qty, load_numbers):
     labels = []
     for i in range(qty):
-        load_text = load_numbers[i] if i < len(load_numbers) else ""
+        pallet_location = load_numbers[i] if i < len(load_numbers) else ""
         labels.append(make_single_label_pdf(
-            so, scac, pro, load_text, i + 1, qty
+            so, scac, pro, pallet_location, i + 1, qty
         ))
     return labels
 
@@ -142,7 +149,7 @@ if manual_mode:
     header[1].markdown("**PRO (Barcode)**")
     header[2].markdown("**Carrier**")
     header[3].markdown("**Quantity**")
-    header[4].markdown("**Load Numbers (comma-separated)**")
+    header[4].markdown("**Pallet Locations (comma-separated)**")
 
     rows = []
     for i in range(20):
@@ -151,7 +158,7 @@ if manual_mode:
         pro = cols[1].text_input("", key=f"pro_{i}")
         scac = cols[2].text_input("", key=f"scac_{i}")
         qty = cols[3].number_input("", min_value=1, value=1, key=f"qty_{i}")
-        loads = cols[4].text_input("", key=f"load_{i}")
+        loads = cols[4].text_input("", key=f"load_{i}", help="Example: c16, a26")
         if so.strip():
             rows.append((so, pro, scac, qty, loads))
 
@@ -171,8 +178,8 @@ if manual_mode:
         if all_labels:
             ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y%m%d-%H%M%S")
             merged = fitz.open()
-            for pdf in all_labels:
-                merged.insert_pdf(fitz.open(stream=pdf, filetype="pdf"))
+            for pdf_bytes in all_labels:
+                merged.insert_pdf(fitz.open(stream=pdf_bytes, filetype="pdf"))
 
             buf = BytesIO()
             merged.save(buf)
@@ -232,8 +239,8 @@ if not manual_mode:
             ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y%m%d-%H%M%S")
 
             merged = fitz.open()
-            for pdf in all_labels:
-                merged.insert_pdf(fitz.open(stream=pdf, filetype="pdf"))
+            for pdf_bytes in all_labels:
+                merged.insert_pdf(fitz.open(stream=pdf_bytes, filetype="pdf"))
 
             label_buf = BytesIO()
             merged.save(label_buf)
@@ -256,4 +263,5 @@ if not manual_mode:
                 file_name=f"bols_{ts}.pdf",
                 mime="application/pdf"
             )
+
 
