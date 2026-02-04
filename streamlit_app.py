@@ -112,9 +112,9 @@ def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
     # Bottom-left pallet location (NO "Load:" prefix)
     if pallet_location:
         # bottom margin area (page height 612)
-        pdf.set_font("Arial", "B", 36)
+        pdf.set_font("Arial", "B", 72)
         pdf.set_xy(30, 545)  # x=left padding, y=near bottom
-        pdf.cell(300, 50, pallet_location, ln=0, align="L")
+        pdf.cell(300, 80, pallet_location, ln=0, align="L")
 
     # Bottom-center count
     pdf.set_y(500)
