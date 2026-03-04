@@ -34,42 +34,106 @@ def split_csv_like(value: str):
         return []
     return [p.strip() for p in value.split(",") if p.strip()]
 
-def parse_job_name_qty(job_raw: str):
-    if not job_raw:
+def parse_qty_value(raw: str) -> int:
+    """
+    Qty can be:
+      - "3"
+      - "C16, A26"  (treat as count)
+      - "1 PLT" or "2 PALLETS" (extract leading int)
+    """
+    if not raw:
         return 1
+    raw = raw.strip()
 
-    job_raw = job_raw.strip()
+    # pure int
+    if re.fullmatch(r"\d+", raw):
+        return int(raw)
 
-    if re.fullmatch(r"\d+", job_raw):
-        return int(job_raw)
+    # leading int like "2 PLT", "3 pallets"
+    m = re.match(r"^\s*(\d+)\b", raw)
+    if m:
+        return int(m.group(1))
 
-    parts = split_csv_like(job_raw)
-    if parts:
-        return len(parts)
+    # otherwise treat as CSV list count
+    parts = split_csv_like(raw)
+    return len(parts) if parts else 1
 
-    return 1
+def extract_fields(text: str):
+    """
+    Supports BOTH document formats:
 
-def extract_fields(text):
-    carrier_match = re.search(r"Carrier:\s*(.+)", text)
-    so_match = re.search(r"Sales Order:\s*(SO-\d+[\w-]*)", text)
-    pro_match = re.search(r"Pro Number:\s*(\d+)", text)
+    OLD format labels:
+      - Sales Order: SO-...
+      - Job Name: (number or csv list)
+      - Load Number: (csv list)
+      - Pro Number: (digits)
+      - Carrier:
 
-    job_match = re.search(r"Job Name:\s*(.+)", text)
+    NEW format labels:
+      - Primary Reference: SO-...  (same concept as Sales Order)
+      - QTY: ...                   (same concept as Job Name)
+      - PLT LOC.: ...              (same concept as Load Number)
+      - PRO Number: ...
+      - Carrier:
+
+    Also supports combined line like:
+      "QTY: 1 PLT LOC.: C1"
+    """
+
+    # Carrier / PRO (common)
+    carrier_match = re.search(r"(?im)^\s*Carrier:\s*(.+?)\s*$", text)
+    # allow digits, letters, hyphen (sometimes PROs are not strictly digits)
+    pro_match = re.search(r"(?im)^\s*PRO\s*Number:\s*([A-Za-z0-9-]+)\s*$", text)
+
+    # Sales Order (old) OR Primary Reference (new)
+    so_match = (
+        re.search(r"(?im)^\s*Sales\s*Order:\s*(SO-\d+[\w-]*)\s*$", text)
+        or re.search(r"(?im)^\s*Primary\s*Reference:\s*(SO-\d+[\w-]*)\s*$", text)
+    )
+
+    so = so_match.group(1).strip() if so_match else ""
+    scac = carrier_match.group(1).strip().split()[0] if carrier_match else ""
+    pro = pro_match.group(1).strip() if pro_match else ""
+
+    # Job Name (old) OR QTY (new)
+    job_match = re.search(r"(?im)^\s*Job\s*Name:\s*(.+?)\s*$", text)
+    qty_match = re.search(r"(?im)^\s*QTY:\s*(.+?)\s*$", text)
+
     job_raw = job_match.group(1).strip() if job_match else ""
-    qty = parse_job_name_qty(job_raw)
+    qty_raw_line = qty_match.group(1).strip() if qty_match else ""
 
-    load_match = re.search(r"Load Number:\s*(.+)", text)
-    load_numbers = split_csv_like(load_match.group(1)) if load_match else []
+    # Load Number (old) OR PLT LOC (new)
+    load_match = re.search(r"(?im)^\s*Load\s*Number:\s*(.+?)\s*$", text)
+    plt_match = re.search(r"(?im)^\s*PLT\s*LOC\.?:\s*(.+?)\s*$", text)
 
-    if not job_raw:
-        pieces_match = re.search(r"(?i)Pieces\s*[:\-]?\s*(\d+)", text)
+    load_raw = load_match.group(1).strip() if load_match else ""
+    plt_raw_line = plt_match.group(1).strip() if plt_match else ""
+
+    # If the new format combined it like: "QTY: 1 PLT LOC.: C1"
+    # then qty_raw_line may contain "PLT LOC.: ..."
+    if qty_raw_line and re.search(r"(?i)\bPLT\s*LOC\b", qty_raw_line):
+        parts = re.split(r"(?i)\bPLT\s*LOC\.?:\s*", qty_raw_line, maxsplit=1)
+        qty_part = parts[0].strip()
+        loc_part = parts[1].strip() if len(parts) > 1 else ""
+        qty_raw = qty_part
+        plt_raw = loc_part
+    else:
+        qty_raw = qty_raw_line or job_raw
+        plt_raw = plt_raw_line or load_raw
+
+    qty = parse_qty_value(qty_raw)
+    load_numbers = split_csv_like(plt_raw)
+
+    # Fallback: Pieces: 3 (if neither Job/QTY gave us a usable value)
+    if not qty_raw:
+        pieces_match = re.search(r"(?im)^\s*Pieces\s*[:\-]?\s*(\d+)\s*$", text)
         if pieces_match:
             qty = int(pieces_match.group(1))
 
     return {
-        "scac": carrier_match.group(1).strip().split()[0] if carrier_match else "",
-        "so": so_match.group(1) if so_match else "",
-        "pro": pro_match.group(1) if pro_match else "",
+        "scac": scac,
+        "so": so,
+        "pro": pro,
         "load_numbers": load_numbers,
         "qty": qty,
     }
@@ -92,7 +156,7 @@ def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
     pdf.add_page()
     pdf.set_auto_page_break(False)
 
-    # Sales Order
+    # Sales Order / Primary Reference
     pdf.set_font("Arial", "B", 80)
     pdf.set_y(60)
     pdf.cell(792, 80, so, ln=1, align="C")
@@ -109,11 +173,10 @@ def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
     pdf.set_font("Arial", "B", 130)
     pdf.cell(792, 100, scac, ln=1, align="C")
 
-    # Bottom-left pallet location (NO "Load:" prefix)
+    # Bottom-left pallet location
     if pallet_location:
-        # bottom margin area (page height 612)
         pdf.set_font("Arial", "B", 72)
-        pdf.set_xy(30, 545)  # x=left padding, y=near bottom
+        pdf.set_xy(30, 545)
         pdf.cell(300, 80, pallet_location, ln=0, align="L")
 
     # Bottom-center count
@@ -145,7 +208,7 @@ if manual_mode:
     st.subheader("Manual Shipment Entry")
 
     header = st.columns([3, 3, 2, 2, 3])
-    header[0].markdown("**Sales Order**")
+    header[0].markdown("**Sales Order / Primary Ref**")
     header[1].markdown("**PRO (Barcode)**")
     header[2].markdown("**Carrier**")
     header[3].markdown("**Quantity**")
@@ -196,7 +259,7 @@ if manual_mode:
 
 if not manual_mode:
     uploaded_files = st.file_uploader(
-        "Upload BOL PDFs",
+        "Upload BOL / Shipment Confirmation PDFs",
         type="pdf",
         accept_multiple_files=True
     )
@@ -209,6 +272,7 @@ if not manual_mode:
         for f in uploaded_files:
             doc = fitz.open(stream=f.read(), filetype="pdf")
 
+            # Put signature text on every page (same as before)
             for page in doc:
                 page.insert_text(
                     (88, 745),
@@ -219,6 +283,7 @@ if not manual_mode:
 
             combined_bol.insert_pdf(doc)
 
+            # Extract labels per page
             for page in doc:
                 fields = extract_fields(page.get_text())
                 if debug:
@@ -263,5 +328,3 @@ if not manual_mode:
                 file_name=f"bols_{ts}.pdf",
                 mime="application/pdf"
             )
-
-
