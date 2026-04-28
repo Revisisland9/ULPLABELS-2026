@@ -43,49 +43,53 @@ def parse_qty_value(raw: str) -> int:
     """
     if not raw:
         return 1
+
     raw = raw.strip()
 
-    # pure int
     if re.fullmatch(r"\d+", raw):
         return int(raw)
 
-    # leading int like "2 PLT", "3 pallets"
     m = re.match(r"^\s*(\d+)\b", raw)
     if m:
         return int(m.group(1))
 
-    # otherwise treat as CSV list count
     parts = split_csv_like(raw)
     return len(parts) if parts else 1
 
 def extract_fields(text: str):
     """
-    Supports BOTH document formats:
+    Supports multiple document formats:
 
     OLD format labels:
       - Sales Order: SO-...
-      - Job Name: (number or csv list)
-      - Load Number: (csv list)
-      - Pro Number: (digits)
+      - Job Name: qty or csv list
+      - Load Number: csv list
+      - Pro Number:
       - Carrier:
 
     NEW format labels:
-      - Primary Reference: SO-...  (same concept as Sales Order)
-      - QTY: ...                   (same concept as Job Name)
-      - PLT LOC.: ...              (same concept as Load Number)
-      - PRO Number: ...
+      - Primary Reference: SO-...
+      - QTY:
+      - PLT LOC.:
+      - PRO Number:
+      - Carrier:
+
+    UPDATED BOL format:
+      - Sales Order: SO-...
+      - Quantity: same as QTY
+      - Location: same as PLT LOC.
+      - Pro Number:
       - Carrier:
 
     Also supports combined line like:
       "QTY: 1 PLT LOC.: C1"
     """
 
-    # Carrier / PRO (common)
+    # Carrier / PRO
     carrier_match = re.search(r"(?im)^\s*Carrier:\s*(.+?)\s*$", text)
-    # allow digits, letters, hyphen (sometimes PROs are not strictly digits)
     pro_match = re.search(r"(?im)^\s*PRO\s*Number:\s*([A-Za-z0-9-]+)\s*$", text)
 
-    # Sales Order (old) OR Primary Reference (new)
+    # Sales Order OR Primary Reference
     so_match = (
         re.search(r"(?im)^\s*Sales\s*Order:\s*(SO-\d+[\w-]*)\s*$", text)
         or re.search(r"(?im)^\s*Primary\s*Reference:\s*(SO-\d+[\w-]*)\s*$", text)
@@ -95,22 +99,27 @@ def extract_fields(text: str):
     scac = carrier_match.group(1).strip().split()[0] if carrier_match else ""
     pro = pro_match.group(1).strip() if pro_match else ""
 
-    # Job Name (old) OR QTY (new)
+    # Job Name OR QTY OR Quantity
     job_match = re.search(r"(?im)^\s*Job\s*Name:\s*(.+?)\s*$", text)
-    qty_match = re.search(r"(?im)^\s*QTY:\s*(.+?)\s*$", text)
+    qty_match = (
+        re.search(r"(?im)^\s*QTY:\s*(.+?)\s*$", text)
+        or re.search(r"(?im)^\s*Quantity:\s*(.+?)\s*$", text)
+    )
 
     job_raw = job_match.group(1).strip() if job_match else ""
     qty_raw_line = qty_match.group(1).strip() if qty_match else ""
 
-    # Load Number (old) OR PLT LOC (new)
+    # Load Number OR PLT LOC OR Location
     load_match = re.search(r"(?im)^\s*Load\s*Number:\s*(.+?)\s*$", text)
-    plt_match = re.search(r"(?im)^\s*PLT\s*LOC\.?:\s*(.+?)\s*$", text)
+    plt_match = (
+        re.search(r"(?im)^\s*PLT\s*LOC\.?:\s*(.+?)\s*$", text)
+        or re.search(r"(?im)^\s*Location:\s*(.+?)\s*$", text)
+    )
 
     load_raw = load_match.group(1).strip() if load_match else ""
     plt_raw_line = plt_match.group(1).strip() if plt_match else ""
 
-    # If the new format combined it like: "QTY: 1 PLT LOC.: C1"
-    # then qty_raw_line may contain "PLT LOC.: ..."
+    # Combined new format: "QTY: 1 PLT LOC.: C1"
     if qty_raw_line and re.search(r"(?i)\bPLT\s*LOC\b", qty_raw_line):
         parts = re.split(r"(?i)\bPLT\s*LOC\.?:\s*", qty_raw_line, maxsplit=1)
         qty_part = parts[0].strip()
@@ -124,7 +133,7 @@ def extract_fields(text: str):
     qty = parse_qty_value(qty_raw)
     load_numbers = split_csv_like(plt_raw)
 
-    # Fallback: Pieces: 3 (if neither Job/QTY gave us a usable value)
+    # Fallback: Pieces: 3
     if not qty_raw:
         pieces_match = re.search(r"(?im)^\s*Pieces\s*[:\-]?\s*(\d+)\s*$", text)
         if pieces_match:
@@ -144,12 +153,6 @@ def generate_barcode_image_path(value):
     return code128.save(raw_path, options={"write_text": False})
 
 def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
-    """
-    One label page:
-    - Barcode encodes PRO number (pro)
-    - Pallet location text is displayed bottom-left (no prefix)
-    - Bottom shows idx of total (center)
-    """
     barcode_path = generate_barcode_image_path(pro) if pro else None
 
     pdf = FPDF(unit="pt", format=(792, 612))
@@ -161,14 +164,14 @@ def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
     pdf.set_y(60)
     pdf.cell(792, 80, so, ln=1, align="C")
 
-    # Barcode (PRO)
+    # Barcode / PRO
     if barcode_path:
         pdf.image(barcode_path, x=196, y=160, w=400, h=100)
         pdf.set_y(270)
         pdf.set_font("Arial", "B", 24)
         pdf.cell(792, 30, pro, ln=1, align="C")
 
-    # Carrier
+    # Carrier / SCAC
     pdf.set_y(360)
     pdf.set_font("Arial", "B", 130)
     pdf.cell(792, 100, scac, ln=1, align="C")
@@ -195,11 +198,20 @@ def make_single_label_pdf(so, scac, pro, pallet_location, idx, total):
 
 def make_labels(so, scac, pro, qty, load_numbers):
     labels = []
+
     for i in range(qty):
         pallet_location = load_numbers[i] if i < len(load_numbers) else ""
-        labels.append(make_single_label_pdf(
-            so, scac, pro, pallet_location, i + 1, qty
-        ))
+        labels.append(
+            make_single_label_pdf(
+                so,
+                scac,
+                pro,
+                pallet_location,
+                i + 1,
+                qty
+            )
+        )
+
     return labels
 
 # ---------------- Manual Entry Mode ----------------
@@ -215,18 +227,22 @@ if manual_mode:
     header[4].markdown("**Pallet Locations (comma-separated)**")
 
     rows = []
+
     for i in range(20):
         cols = st.columns([3, 3, 2, 2, 3])
+
         so = cols[0].text_input("", key=f"so_{i}")
         pro = cols[1].text_input("", key=f"pro_{i}")
         scac = cols[2].text_input("", key=f"scac_{i}")
         qty = cols[3].number_input("", min_value=1, value=1, key=f"qty_{i}")
-        loads = cols[4].text_input("", key=f"load_{i}", help="Example: c16, a26")
+        loads = cols[4].text_input("", key=f"load_{i}", help="Example: C16, A26")
+
         if so.strip():
             rows.append((so, pro, scac, qty, loads))
 
     if st.button("🧙‍♂️ Generate Labels"):
         all_labels = []
+
         for so, pro, scac, qty, loads in rows:
             all_labels.extend(
                 make_labels(
@@ -240,6 +256,7 @@ if manual_mode:
 
         if all_labels:
             ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y%m%d-%H%M%S")
+
             merged = fitz.open()
             for pdf_bytes in all_labels:
                 merged.insert_pdf(fitz.open(stream=pdf_bytes, filetype="pdf"))
@@ -272,7 +289,7 @@ if not manual_mode:
         for f in uploaded_files:
             doc = fitz.open(stream=f.read(), filetype="pdf")
 
-            # Put signature text on every page (same as before)
+            # Put signature text on every page
             for page in doc:
                 page.insert_text(
                     (88, 745),
@@ -286,6 +303,7 @@ if not manual_mode:
             # Extract labels per page
             for page in doc:
                 fields = extract_fields(page.get_text())
+
                 if debug:
                     st.write(fields)
 
