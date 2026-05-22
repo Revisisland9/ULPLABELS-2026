@@ -29,10 +29,30 @@ debug = st.toggle("Debug", value=False)
 
 # ---------------- Utilities ----------------
 
+# ---------------- Utilities ----------------
+
 def split_csv_like(value: str):
     if not value:
         return []
     return [p.strip() for p in value.split(",") if p.strip()]
+
+def normalize_carrier_scac(raw_carrier: str) -> str:
+    """
+    Converts known carrier names into label-friendly SCACs.
+    Keeps existing SCAC-style values unchanged.
+    """
+    if not raw_carrier:
+        return ""
+
+    value = raw_carrier.strip()
+    upper = value.upper()
+
+    # Southeastern Freight Lines
+    if "SOUTHEASTERN" in upper:
+        return "SEFL"
+
+    # Default behavior: use the first word from the Carrier line
+    return value.split()[0]
 
 def parse_qty_value(raw: str) -> int:
     """
@@ -96,7 +116,7 @@ def extract_fields(text: str):
     )
 
     so = so_match.group(1).strip() if so_match else ""
-    scac = carrier_match.group(1).strip().split()[0] if carrier_match else ""
+    scac = normalize_carrier_scac(carrier_match.group(1)) if carrier_match else ""
     pro = pro_match.group(1).strip() if pro_match else ""
 
     # Job Name OR QTY OR Quantity
